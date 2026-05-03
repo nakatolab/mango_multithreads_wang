@@ -30,7 +30,7 @@ BEGIN_RCPP
 END_RCPP
 }
 // parseFastq
-std::vector< int > parseFastq(std::string fastq1, std::string fastq2, std::string basename, int minlength, int maxlength, bool keepempty, bool verbose, std::string linker1, std::string linker2, int numberlinkers);
+std::vector<std::string> parseFastq(std::string fastq1, std::string fastq2, std::string basename, int minlength, int maxlength, bool keepempty, bool verbose, std::string linker1, std::string linker2, int numberlinkers);
 RcppExport SEXP mango_parseFastq(SEXP fastq1SEXP, SEXP fastq2SEXP, SEXP basenameSEXP, SEXP minlengthSEXP, SEXP maxlengthSEXP, SEXP keepemptySEXP, SEXP verboseSEXP, SEXP linker1SEXP, SEXP linker2SEXP, SEXP numberlinkersSEXP) {
 BEGIN_RCPP
     Rcpp::RObject __result;

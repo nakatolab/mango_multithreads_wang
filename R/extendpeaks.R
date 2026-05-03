@@ -5,8 +5,9 @@ extendpeaks <- function(peaksfile=peaksfile,peaksfileslop=peaksfileslop,
                         peakslop=peakslop,blacklist,verbose=FALSE)
 {
   
-  # make peakfile with slop
+  # make peakfile with slop (sort first, as input may be sorted by score rather than coordinates)
   command = paste(bedtoolspath, " slop -i ",peaksfile, " -g ",bedtoolsgenome," -b ",peakslop,
+                  " | ", bedtoolspath, " sort -i - ",
                   " | ", bedtoolspath, " merge -c 4 -o collapse > ",peaksfileslop,sep="")
   if (verbose == TRUE){ print (command) }
   system(command)

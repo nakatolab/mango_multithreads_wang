@@ -13,7 +13,16 @@ findScore <- function(fastq,nlines =10000)
   scoretype = "unknown"
   
   # open connection
-  con  <- file(fastq, open = "r")
+  con_test <- file(fastq, open = "rb")
+  magic <- readBin(con_test, what = "raw", n = 2)
+  close(con_test)
+  
+  if (length(magic) == 2 && identical(as.integer(magic), c(0x1f, 0x8b)))
+  {
+    con <- gzfile(fastq, open = "rt")
+  } else {
+    con <- file(fastq, open = "r")
+  }
   
   # read first lines
   lines <- readLines(con, n = nlines*4, warn = FALSE)

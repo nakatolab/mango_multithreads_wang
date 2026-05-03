@@ -1,4 +1,4 @@
-# Modified mango for multi-threads
+# Modified mango for multi-threads and replicates
 
 ## 1.What is the bugs
 
@@ -43,14 +43,14 @@ Instead, I modified the raw script to deal with reads (fastq) from SRA or Encode
 
 ## 3.Install (for my personal use, same with the original Mango, )
 
-step1 shell:
+### step1 shell:
 ``` shell
-git clone https://github.com/wangjk321/mango_multithreads_wang.git
+git clone https://github.com/YuNagaoka/mango_multithreads_wang.git
 mv mango_multithreads_wang mango
 R CMD INSTALL --no-multiarch --with-keep.source mango
 ```
 
-step2 (required package) R:
+### step2 (required package) R:
 ``` R
 install.packages('hash')
 install.packages('Rcpp')
@@ -58,27 +58,92 @@ install.packages('optparse')
 install.packages('readr')
 ```
 
-step3 run the Mango
-``` shell
-FASTQ=`ls fastq |cut -f 1-7 -d '_'|sort|uniq`
+### step3 run the Mango
 
-build=hg38
-index=/home/Database/bowtie-indexes/UCSC-$build
-gt=/home/Database/UCSC/$build/genome_table
-mango="Rscript ~/software/mango/mango/mango_encode.R"
-mkdir -p mango
+**Pattern A — single replicate (or explicit file paths)**
+``` shell
+sample=CTCF
+FASTQ=$(ls fastq/$sample | cut -d '_' -f 1 | sort -u)
+
+index=bowtie-indexes/genome
+gt=genometable.txt
+blacklist=ENCODE-Blacklist/hg38-blacklist.v2.bed
+
+mango="Rscript /opt/mango/mango_SRA.R"
+mkdir -p mango/$sample
 
 for i in $FASTQ
 do
-        echo $i
-        $mango --fastq1 fastq/${i}_1.fastq.gz \
-           --fastq2 fastq/${i}_2.fastq.gz \
-           --prefix mango/${i} \
+    setsid $mango --stages 1:5 \
+           --prefix ${sample}_${i} \
+           --outdir $outdir \
+           --chromexclude chrM,chrY \
            --bowtieref $index \
            --bedtoolsgenome $gt \
-           --chromexclude chrM,chrY \
-           --stages 1:5 \
-           --reportallpairs TRUE \
-           --MACS_qvalue 0.05
+           --fastq1 fastq/$sample/${i}_1.fastq.gz \
+           --fastq2 fastq/$sample/${i}_2.fastq.gz \
+           --linkerA CGCGATATCTTATCTGACT \
+           --singlelinker TRUE \
+           --minlength 15 \
+           --maxlength 1000 \
+           --keepempty TRUE \
+           --threads 10 \
+           --shortreads FALSE \
+           --MACS_qvalue 0.05 \
+           --blacklist $blacklist \
+           --reportallpairs TRUE
 done
 ```
+
+**Pattern B — multiple replicates (auto-merge with `--fastqdir`)**
+
+・As an additional change, I have added the `--fastqdir` option, which automatically merges multiple replicates found in the fastq directory.
+
+`--fastqdir` behavior:
+- **2 or more** `*_1.fastq.gz` / `*_R1.fastq.gz` , `*_2.fastq.gz` / `*_R2.fastq.gz` pairs found in fastq directory
+→ files are merged using `cat` command (without decompression) into temporary files `{prefix}_merged_1.fastq.gz` / `{prefix}_merged_2.fastq.gz`, which are automatically deleted after Stage 1 completes.
+
+- **Exactly 1** pair found → that file is used directly (no merge, no temporary copy).
+- Output files are always named using `--prefix`, regardless of whether a merge was performed.
+
+Place all replicate FASTQ files in same directory:
+
+```shell
+fastq/CTCF/
+  rep1_1.fastq.gz  rep1_2.fastq.gz
+  rep2_1.fastq.gz  rep2_2.fastq.gz
+  ...
+```
+Then pass the directory with `--fastqdir`.  
+`--fastq1` / `--fastq2` are **not** required when `--fastqdir` is used.
+
+``` shell
+sample=CTCF
+
+index=bowtie-indexes/genome
+gt=genometable.txt
+blacklist=ENCODE-Blacklist/hg38-blacklist.v2.bed
+
+mango="Rscript /opt/mango/mango_SRA.R"
+mkdir -p mango/$sample
+
+setsid $mango --stages 1:5 \
+       --prefix $sample \
+       --outdir mango/$sample \
+       --chromexclude chrM,chrY \
+       --bowtieref $index \
+       --bedtoolsgenome $gt \
+       --fastqdir fastq/$sample \
+       --linkerA CGCGATATCTTATCTGACT \
+       --singlelinker TRUE \
+       --minlength 15 \
+       --maxlength 1000 \
+       --keepempty TRUE \
+       --threads 10 \
+       --shortreads FALSE \
+       --MACS_qvalue 0.05 \
+       --blacklist $blacklist \
+       --reportallpairs TRUE
+```
+
+The additional changes made to the code from the original mango are listed in `fixed_error.log`.

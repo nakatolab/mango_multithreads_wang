@@ -15,9 +15,6 @@ alignBowtie <- function(fastq,output,bowtiepath,bowtieref,
                         shortreads,threads,verbose=TRUE,nlines=10000)
 {
   
-  # threads
-  threads = 1
-  
   # choose alignment parameters
   # note- "-m 1" ensures that only uniquely mapped reads are reported.
   bowtievar=paste("-S -v 0 -k 1 --chunkmbs 500 --sam-nohead --mapq 40 -m 1","--threads",threads)
@@ -40,6 +37,12 @@ alignBowtie <- function(fastq,output,bowtiepath,bowtieref,
   }
   
   # execute command
-  system(bowtiecommand)
+  # Wrap in bash with SIGHUP ignored so that terminal disconnect does not kill
+  # bowtie mid-alignment (R resets SIGHUP handling on startup, overriding nohup).
+  exitcode = system(paste0("bash -c 'trap \"\" HUP; ", bowtiecommand, "'"))
+  if (exitcode != 0) {
+    stop(paste("bowtie alignment failed with exit code", exitcode,
+               "for input:", fastq))
+  }
 }
 

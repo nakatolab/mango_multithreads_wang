@@ -5,6 +5,13 @@ plotdistancedistribution <- function(bedpefile,pdffile,npets=1000000)
 {
 
   bedpe = read_tsv(bedpefile,col_names = F,n_max=npets)
+
+  if (nrow(bedpe) == 0 || ncol(bedpe) < 5)
+  {
+    warning("bedpe file is empty or has insufficient columns, skipping distance distribution plot")
+    return(invisible(NULL))
+  }
+
   distances = (bedpe[,5]-bedpe[,2])[,1]
   log10distances = log10(distances[which(distances>0)])
   
