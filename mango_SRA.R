@@ -59,6 +59,89 @@ alignBowtie <- function(fastq,output,bowtiepath,bowtieref,
 
 }
 
+archive_stage6_files <- function(outname)
+{
+  targets <- paste0(outname, c("_1.same.fastq", "_2.same.fastq",
+                               "_1.chim.fastq", "_2.chim.fastq",
+                               "_1.same.sam", "_2.same.sam",
+                               ".bedpe", ".tagAlign"))
+  failures <- c()
+
+  for (original in targets)
+  {
+    archive <- paste0(original, ".gz")
+    if (!file.exists(original))
+    {
+      if (file.exists(archive))
+      {
+        if (system(paste("gzip -t --", shQuote(archive))) == 0)
+          stage6_log(paste("Stage 6 already archived:", archive))
+        else
+        {
+          stage6_log(paste("Stage 6 found invalid archive:", archive))
+          failures <- c(failures, archive)
+        }
+      }
+      else
+        stage6_log(paste("Stage 6 source not found, skipping:", original))
+      next
+    }
+
+    if (file.info(original)$size == 0)
+    {
+      stage6_log(paste("Stage 6 source is empty, skipping:", original))
+      next
+    }
+
+    if (file.exists(archive))
+    {
+      if (!file.remove(archive))
+      {
+        stage6_log(paste("Stage 6 could not replace existing archive:", archive))
+        failures <- c(failures, archive)
+        next
+      }
+      stage6_log(paste("Stage 6 replacing existing archive because source is present:", archive))
+    }
+
+    temporary <- tempfile(pattern=paste0(basename(original), ".gz.tmp-"),
+                          tmpdir=dirname(original))
+    gzip_status <- system(paste("gzip -c --", shQuote(original), ">",
+                                shQuote(temporary)))
+    if (gzip_status != 0)
+    {
+      if (file.exists(temporary)) file.remove(temporary)
+      stage6_log(paste("Stage 6 compression failed:", original))
+      failures <- c(failures, original)
+      next
+    }
+    if (system(paste("gzip -t --", shQuote(temporary))) != 0)
+    {
+      if (file.exists(temporary)) file.remove(temporary)
+      stage6_log(paste("Stage 6 validation failed:", original))
+      failures <- c(failures, original)
+      next
+    }
+    if (file.exists(archive) || !file.rename(temporary, archive))
+    {
+      if (file.exists(temporary)) file.remove(temporary)
+      stage6_log(paste("Stage 6 could not create archive:", archive))
+      failures <- c(failures, original)
+      next
+    }
+    if (!file.remove(original))
+    {
+      stage6_log(paste("Stage 6 could not remove source:", original))
+      failures <- c(failures, original)
+      next
+    }
+    stage6_log(paste("Stage 6 archived and removed source:", archive))
+  }
+
+  if (length(failures) > 0)
+    stop(paste("Stage 6 failed for:", paste(failures, collapse=", ")))
+}
+
 
 
 ##################################### read commandline paramters #####################################
@@ -87,7 +170,7 @@ option_list <- list(
   make_option(c("--fastq2"),  default="NULL",help="fastq read 2 file"),
   make_option(c("--linkerA"),  default="GTTGGATAAG",help="linker sequence A to look for"),
   make_option(c("--linkerB"),  default="GTTGGAATGT",help="linker sequence B to look for"),
-  make_option(c("--singlelinker"),  default="FALSE",help="If this is true Mango will only look for linkerA"),
+  make_option(c("--singlelinker"),  default="FALSE",help="If this is TRUE Mango will only look for linkerA"),
   make_option(c("--minlength"),  default="15",help="min length of reads after linker trimming"),
   make_option(c("--maxlength"),  default="25",help="max length of reads after linker trimming"),
   make_option(c("--keepempty"),  default="FALSE",help="Should reads with no linker be kept"),
@@ -228,12 +311,21 @@ if (opt["outdir"] != "NULL")
 }
 
 logfile = paste(as.character(opt["outname"]),".mango.log",sep="")
-if (file.exists(logfile) ==TRUE){file.remove(logfile)}
-starttime = paste("Analysis start time:" , as.character(Sys.time()))
-write(starttime,file=logfile,append=TRUE)
-
 errorlog = paste(as.character(opt["outname"]), ".error.log", sep="")
-if (file.exists(errorlog) == TRUE){file.remove(errorlog)}
+stage6_only = length(opt$stages) == 1 && as.numeric(opt$stages[1]) == 6
+stage6_status = c()
+stage6_log <- function(message)
+{
+  print(message)
+  stage6_status <<- c(stage6_status, message)
+}
+if (!stage6_only)
+{
+  if (file.exists(logfile) ==TRUE){file.remove(logfile)}
+  starttime = paste("Analysis start time:" , as.character(Sys.time()))
+  write(starttime,file=logfile,append=TRUE)
+  if (file.exists(errorlog) == TRUE){file.remove(errorlog)}
+}
 
 ##################################### read in arguments #####################################
 
@@ -317,6 +409,19 @@ if (as.character(opt["fastqdir"]) != "NULL") {
                length(files2), paste0("*", suffix2, ".fastq.gz"), "files in fastqdir:", fastqdir))
   }
 
+  # Verify that each R1 file has a matching R2 file with the same base name.
+  # files1 and files2 are both produced by sort(), so alphabetical order matches
+  # correctly because the only difference between corresponding file names is
+  # the suffix (suffix1 vs suffix2).
+  bases1 <- sub(paste0(suffix1, "\\.fastq\\.gz$"), "", basename(files1))
+  bases2 <- sub(paste0(suffix2, "\\.fastq\\.gz$"), "", basename(files2))
+  mismatched <- which(bases1 != bases2)
+  if (length(mismatched) > 0) {
+    stop(paste("R1/R2 basename mismatch in fastqdir:", fastqdir,
+               "\n  R1:", paste(basename(files1[mismatched]), collapse=", "),
+               "\n  R2:", paste(basename(files2[mismatched]), collapse=", ")))
+  }
+
   if (length(files1) == 1) {
     print(paste("fastqdir: single replicate found, using directly:", files1[1]))
     opt["fastq1"] <- files1[1]
@@ -354,6 +459,15 @@ if (1 %in% opt$stages)
 {
   tryCatch({
   checkRequired(opt,c("fastq1","fastq2"))
+
+  # Validate that both FASTQ files exist and are non-empty before proceeding.
+  for (fq_label in c("fastq1", "fastq2")) {
+    fq_path <- as.character(opt[fq_label])
+    if (!file.exists(fq_path))
+      stop(paste("FASTQ file not found:", fq_path))
+    if (file.info(fq_path)$size == 0)
+      stop(paste("FASTQ file is empty (0 bytes):", fq_path))
+  }
 
   # gather arguments
   outname         = as.character(opt["outname"])
@@ -408,7 +522,7 @@ if (1 %in% opt$stages)
   
 ###################################### align reads #####################################
 
-if (2 %in% opt$stages)
+if (2 %in% opt$stages && length(errors_occurred) == 0)
 {
   tryCatch({
   checkRequired(opt,c("bowtieref"))
@@ -460,7 +574,7 @@ if (2 %in% opt$stages)
 
 ##################################### filter reads #####################################
 
-if (3 %in% opt$stages)
+if (3 %in% opt$stages && length(errors_occurred) == 0)
 {
   tryCatch({
   checkRequired(opt,c("outname"))
@@ -531,7 +645,7 @@ if (3 %in% opt$stages)
 
 ##################################### call peaks #####################################
 
-if (4 %in% opt$stages)
+if (4 %in% opt$stages && length(errors_occurred) == 0)
 {
   tryCatch({
   checkRequired(opt,c("bedtoolsgenome"))
@@ -588,7 +702,7 @@ if (4 %in% opt$stages)
 
 ##################################### new group/score/filter pairs #####################################
 
-if (5 %in% opt$stages)
+if (5 %in% opt$stages && length(errors_occurred) == 0)
 {
   tryCatch({
   checkRequired(opt,c("outname","bedtoolsgenome"))
@@ -1005,8 +1119,25 @@ if (5 %in% opt$stages)
   })
 } 
 
+##################################### archive intermediate files #####################################
+
+if (6 %in% opt$stages && length(errors_occurred) == 0)
+{
+  tryCatch({
+    archive_stage6_files(as.character(opt["outname"]))
+  }, error = function(e) {
+    errmsg <- conditionMessage(e)
+    cat(paste0("[ERROR] Stage 6 failed: ", errmsg, "\n"), file=stderr())
+    errors_occurred <<- c(errors_occurred, paste0("Stage 6: ", errmsg))
+    if (!stage6_only)
+      write(paste0("[ERROR] Stage 6: ", errmsg), file=errorlog, append=TRUE)
+  })
+}
+
 ##################################### Make Log file #####################################
 
+if (!stage6_only)
+{
 print ("writing to log file")
 
 stoptime = paste("Analysis end time:" , as.character(Sys.time()))
@@ -1051,6 +1182,15 @@ if (length(errors_occurred) > 0)
     write(paste("[ERROR]", err),file=logfile,append=TRUE)
   }
 }
+if (length(stage6_status) > 0)
+{
+  write("",file=logfile,append=TRUE)
+  write("Stage 6 archive status:",file=logfile,append=TRUE)
+  for (status in stage6_status)
+  {
+    write(status,file=logfile,append=TRUE)
+  }
+}
 
 # Write stats.txt summarizing results and any warnings
 statsfile = paste(as.character(opt["outname"]), ".stats.txt", sep="")
@@ -1081,6 +1221,11 @@ if (length(errors_occurred) > 0)
   }
 }
 writeLines(statslines, con=statsfile)
+}
+
+if (length(errors_occurred) > 0)
+{
+  quit(status=1)
+}
 
 print("done")
-

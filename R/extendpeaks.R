@@ -21,9 +21,10 @@ extendpeaks <- function(peaksfile=peaksfile,peaksfileslop=peaksfileslop,
   }
   
   # clean up the peak names
-  mergedpeaks = read_tsv(peaksfileslop, col_names = FALSE)
-  mergedpeaks$V4 = paste("speak_",1:nrow(mergedpeaks),sep="")
-  write.table(mergedpeaks,file=peaksfileslop,quote=FALSE,sep="\t",col.names=FALSE,row.names=FALSE,append=FALSE)
+  mergedpeaks = read_tsv(peaksfileslop, col_names = FALSE,
+                         col_types = cols(.default = col_character()))
+  mergedpeaks[[4]] = paste("speak_",1:nrow(mergedpeaks),sep="")
+  write.table(mergedpeaks[,1:4],file=peaksfileslop,quote=FALSE,sep="\t",col.names=FALSE,row.names=FALSE,append=FALSE)
   
   # count lines in peak files
   numpeaks = nrow(read_tsv(peaksfile, col_names=FALSE))

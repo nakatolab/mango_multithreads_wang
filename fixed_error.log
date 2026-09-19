@@ -213,4 +213,169 @@
   - --fastqdir 指定時は --fastq1 / --fastq2 の指定が不要。
     出力ファイル名はマージの有無に関わらず --prefix で指定した名称を使用。
 
+--------------------------------------------------------------------------------
+[14] FASTQ R1/R2 read ID 一致検証
+--------------------------------------------------------------------------------
+
+対象: src/mangoC.cpp — parseFastq
+
+  - 各 PET について R1 と R2 の FASTQ ヘッダー read ID が一致するか検証。
+   以下の正規化を適用して比較:
+     * 最初の whitespace 以降を除去
+     * '#' 以降を除去
+     * trailing /1 または /2 サフィックスを除去 (strip_pair_suffix() を再利用)
+     * underscore '_' は除去しない (normalise_qname() と同じ方針)
+
+   対応フォーマット:
+     @SRR123456.1/1  vs  @SRR123456.1/2       → 同一 PET として認識
+     @SRR123456.1 some_comment (両 read 共通)  → 同一 PET として認識
+     @HWI-ST689:... 1:N:0:  vs  2:N:0:        → 同一 PET として認識
+
+  - 正規化後の ID が一致しない場合は Rcpp::stop() でエラーを報告。
+   エラーには PET 番号と R1/R2 の ID を含める。
+   例: FASTQ read-pair ID mismatch at PET 12345: @readA vs @readB
+
+  Before: read ID 不一致を検出しない (silent data loss / PET 不整合の恐れ)
+  After : 不一致 PET を検出し即時停止
+
+--------------------------------------------------------------------------------
+[15] FASTQ R1/R2 read 数不一致・レコード切断の検出
+--------------------------------------------------------------------------------
+
+対象: src/mangoC.cpp — parseFastq
+
+  - 従来の silent break を以下のエラー報告に置き換え:
+
+   (a) R1 の 1 レコードが 4 行未満 (切断された FASTQ):
+       Rcpp::stop("Truncated FASTQ record in R1: fewer than 4 lines in last record")
+
+   (b) R1 にまだ読むべきレコードがあるが R2 が先に EOF になった場合
+       (R2 reads < R1 reads):
+       Rcpp::stop("FASTQ pair count mismatch: R1 and R2 contain different numbers of reads")
+
+   (c) R2 の 1 レコードが 4 行未満 (切断された FASTQ):
+       Rcpp::stop("Truncated FASTQ record in R2: fewer than 4 lines in last record")
+
+   (d) R1 が EOF になったあと R2 に残りのレコードがある場合
+       (R2 reads > R1 reads):
+       Rcpp::stop("FASTQ pair count mismatch: R1 and R2 contain different numbers of reads")
+       ※ 末尾の空行は無視 (false positive 防止)
+
+  Before: EOF に達すると break で正常終了 → read 数不一致が検出されない
+  After : いずれの不整合も即時検出してエラーで停止
+
+--------------------------------------------------------------------------------
+[16] mango_SRA.R — pipeline エラー時の exit status 1
+--------------------------------------------------------------------------------
+
+対象: mango_SRA.R
+
+  - .mango.log / .error.log / .stats.txt をすべて書き終えた後、
+   errors_occurred が 1 件以上あれば quit(status=1) で終了。
+   print("done") は errors_occurred が空の場合のみ表示。
+
+  - 既存の tryCatch 構造・ログ出力処理・stats.txt 出力処理は変更なし。
+
+  Before: エラーが発生しても最後まで到達すると status 0 で正常終了
+         → HPC で失敗ジョブが success 扱いになる恐れ
+  After : エラーがあれば status 1 で終了。ログ・stats は常に書き込まれる。
+
 ================================================================================
+
+[17] Stage failure時の後続Stage実行防止
+
+対象: mango_SRA.R
+
+- errors_occurred が1件以上ある場合、後続Stageを実行しない。
+- partial intermediate filesを下流解析に使用することを防止。
+- log / stats出力後に既存の quit(status=1) で終了。
+- 正常解析時の挙動は変更なし。
+
+================================================================================
+
+[18] Stage 5 BED scientific notation防止
+
+対象: R/extendpeaks.R
+
+- peaksfileslop の読み込みを `read_tsv(..., col_types = cols(.default = col_character()))`
+  に変更し、BED座標を double に変換せず文字列のまま保持。
+
+- peak名の更新を `mergedpeaks$V4` ではなく `mergedpeaks[[4]]` に変更。
+  列名に依存せず、必ず4列目を `speak_1`, `speak_2`, ... で上書き。
+
+- 書き戻しは `mergedpeaks[,1:4]` のみに限定し、出力を常に4列の BED-like format に統一。
+
+Before: `read_tsv()` により start/end が numeric として読み込まれ、
+        `write.table()` で `121000000` → `1.21e+08` のように出力される可能性があり後続のbedtoolsでエラーが発生する。
+        また `mergedpeaks$V4` が新規5列目を追加し、4列目を書き換えないため、peadIDが意図しないものになっていた（解析結果には影響を及ぼさない）。
+
+After : start/end は整数文字列のまま出力され、scientific notation を含まない。
+        `speak_*` は常に4列目に格納され、Stage 5 の bedtools slop / intersect 入力として使用可能。
+
+================================================================================
+
+[19] Interaction P-value計算の数値安定性改善
+
+対象: R/calcP.R
+
+interaction の binomial upper-tail P-value 計算を、
+1 - pbinom(...) から pbinom(..., lower.tail=FALSE) に変更。
+非常に有意な interaction では pbinom() の lower-tail probability が
+floating-point precision の制限により 1 に丸められることがあり、
+1 - pbinom(...) の計算結果が 0 になる問題を修正。
+数学的には従来と同じ binomial upper-tail probability を計算しており、
+Mango の統計モデルや interaction の判定基準自体は変更しない。
+
+Before:
+P = 1 - pbinom(q=v[1]-1, size=v[2], prob=v[3])
+
+極めて小さい P-value の場合、lower-tail probability が数値的に 1 と評価され、
+1 - 1 = 0 となることで P-value が 0 になる場合がある。
+その結果、BH correction 後の Q-value も 0 として
+.interactions.fdr.mango に出力される。
+
+After :
+P = pbinom(q=v[1]-1, size=v[2], prob=v[3], lower.tail=FALSE)
+
+upper-tail probability を直接計算することで、非常に小さい P-value でも
+floating-point precision の範囲内でより安定して計算可能。
+不必要な P-value / Q-value = 0 の発生を防止する。
+
+
+--------------------------------------------------------------------------------
+[20] Stage 6 — 中間ファイルの安全な gzip アーカイブ
+--------------------------------------------------------------------------------
+
+対象: mango_encode.R, mango_SRA.R, README.md
+
+- Stage 1--4 が生成する以下の中間ファイルを gzip 圧縮する Stage 6 を追加。
+  `<prefix>_1.same.fastq`, `<prefix>_2.same.fastq`,
+  `<prefix>_1.chim.fastq`, `<prefix>_2.chim.fastq`,
+  `<prefix>_1.same.sam`, `<prefix>_2.same.sam`,
+  `<prefix>.bedpe`, `<prefix>.tagAlign`
+
+- 各ファイルについて、同じディレクトリ内の一時ファイルへ `gzip -c` で圧縮し、
+  `gzip -t` による検証と最終ファイル名への rename が成功した後に限り、
+  元の非圧縮ファイルを削除する。
+
+- 1ファイルの圧縮・検証・元ファイル削除を完了してから次のファイルを処理する。
+  後続ファイルが失敗しても、先に正常終了したファイルは圧縮済みの状態を保つ。
+
+- 元ファイルと既存の `.gz` が両方存在する場合は、元ファイルを正として
+  既存アーカイブを置き換える。元ファイルがなく、有効な `.gz` のみ存在する場合は
+  圧縮済みとして扱う。両方とも存在しない対象および空ファイルはスキップする。
+
+- two-linker ChIA-PET で生成される非空の `<prefix>_1.chim.fastq` と
+  `<prefix>_2.chim.fastq` も圧縮対象に含める。single-linker解析で生成される
+  0 byte の `.chim.fastq` はスキップして非圧縮のまま残す。
+
+- `--stages 6` による Stage 6 単独実行を可能にした。
+  単独実行時は既存の `.mango.log`, `.error.log`, `.stats.txt` を削除しない。
+
+- Stage 6 は `<prefix>.rmdup.bedpe`、interaction結果、peakファイル、ログ、
+  PDFを圧縮しない。
+
+- READMEに、Stages 2--5を再実行する場合の復元ファイルと、Stage 3または
+  Stage 5から再開する場合の復元ファイルを記載した。
+
+
